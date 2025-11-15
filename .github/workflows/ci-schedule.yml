@@ -8,34 +8,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
 
-    # FIX: Install pyarrow explicitly before other dependencies
-    - name: Install pyarrow (for parquet support)
-      run: pip install pyarrow==15.0.0 --upgrade
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
 
-    # Install all project dependencies
-    - name: Install dependencies
-      run: pip install -r requirements.txt
+      - name: Ingest job data (Bronze)
+        run: |
+          python src/ingest_remoteok.py
+          python src/ingest_remotive.py
 
-    # Run all pipeline scripts
-    - name: Run full pipeline (Bronze → Silver → Gold)
-      run: |
-        python src/ingest_remoteok.py
-        python src/ingest_remotive.py
-        python src/bronze_to_silver.py
-        python src/silver_to_gold.py
+      - name: Convert Bronze → Silver
+        run: python src/bronze_to_silver.py
 
-    # Send email digest using GitHub Secrets
-    - name: Send digest email
-      env:
-        SMTP_USER: ${{ secrets.SMTP_USER }}
-        SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-        DIGEST_TO: ${{ secrets.DIGEST_TO }}
-      run: python src/email_sender.py
+      - name: Convert Silver → Gold
+        run: python src/silver_to_gold.py
+
+      - name: Generate Digest
+        run: python src/digest_generator.py
+
+      - name: Send digest email
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          DIGEST_TO: ${{ secrets.DIGEST_TO }}
+        run: python src/email_sender.py
