@@ -1,41 +1,41 @@
 name: Daily Job Aggregation Pipeline
 
 on:
-  workflow_dispatch:          # Allows manual run
-  schedule:
-    - cron: "30 6 * * *"      # Runs every day at 12:00 PM IST (06:30 UTC)
+  workflow_dispatch:
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+    # FIX: Install pyarrow explicitly before other dependencies
+    - name: Install pyarrow (for parquet support)
+      run: pip install pyarrow==15.0.0 --upgrade
 
-      - name: Run full pipeline (Bronze → Silver → Gold)
-        run: |
-          python src/ingest_remoteok.py
-          python src/ingest_remotive.py
-          python src/bronze_to_silver.py
-          python src/silver_to_gold.py
-          python src/digest_generator.py
+    # Install all project dependencies
+    - name: Install dependencies
+      run: pip install -r requirements.txt
 
-      - name: Send digest email
-        env:
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SMTP_FROM: ${{ secrets.SMTP_USER }}
-          DIGEST_TO: ${{ secrets.DIGEST_TO }}
-        run: |
-          python src/email_sender.py
+    # Run all pipeline scripts
+    - name: Run full pipeline (Bronze → Silver → Gold)
+      run: |
+        python src/ingest_remoteok.py
+        python src/ingest_remotive.py
+        python src/bronze_to_silver.py
+        python src/silver_to_gold.py
+
+    # Send email digest using GitHub Secrets
+    - name: Send digest email
+      env:
+        SMTP_USER: ${{ secrets.SMTP_USER }}
+        SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        DIGEST_TO: ${{ secrets.DIGEST_TO }}
+      run: python src/email_sender.py
