@@ -1,0 +1,18 @@
+# Ignore environment variables
+.env
+
+# Ignore Python cache
+__pycache__/
+
+# Ignore compiled Python
+*.pyc
+
+# Ignore db files (optional)
+data/pipeline.db
+data/gold/*.csv
+data/gold/*.parquet
+data/digest/*.html
+
+# Ignore Airflow / dbt junk if any
+logs/
+dbt_packages/

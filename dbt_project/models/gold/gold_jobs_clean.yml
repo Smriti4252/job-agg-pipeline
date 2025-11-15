@@ -1,0 +1,9 @@
+version: 2
+
+models:
+  - name: gold_jobs_clean
+    columns:
+      - name: URL
+        tests:
+          - unique
+          - not_null

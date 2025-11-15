@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: stg_gold_jobs
+    columns:
+      - name: JOB_ID
+        tests:
+          - not_null
+      - name: URL
+        tests:
+          - unique
+          - not_null
+      - name: TITLE
+        tests:
+          - not_null
