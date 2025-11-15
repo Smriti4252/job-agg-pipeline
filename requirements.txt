@@ -13,3 +13,4 @@ SQLAlchemy>=1.4
 # dbt
 dbt-core>=1.5.0
 dbt-snowflake>=1.5.0
+pyarrow

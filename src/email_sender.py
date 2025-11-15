@@ -10,11 +10,22 @@ def send_digest_email():
 
     load_dotenv()
 
+    # DEBUG PRINTS — Yeh line batayegi GitHub Actions ko env aa bhi raha hai ya nahi
+    print("DEBUG: SMTP_HOST      =", os.getenv("SMTP_HOST"))
+    print("DEBUG: SMTP_PORT      =", os.getenv("SMTP_PORT"))
+    print("DEBUG: SMTP_USER      =", os.getenv("SMTP_USER"))
+    print("DEBUG: SMTP_PASSWORD  =", "****" if os.getenv("SMTP_PASSWORD") else None)
+    print("DEBUG: SMTP_FROM      =", os.getenv("SMTP_FROM"))
+    print("DEBUG: DIGEST_TO      =", os.getenv("DIGEST_TO"))
+
     SMTP_HOST = os.getenv("SMTP_HOST")
-    SMTP_PORT = int(os.getenv("SMTP_PORT"))
+    SMTP_PORT = os.getenv("SMTP_PORT")
     SENDER = os.getenv("SMTP_USER")
     PASSWORD = os.getenv("SMTP_PASSWORD")
     RECIPIENT = os.getenv("DIGEST_TO")
+
+    if SMTP_PORT:
+        SMTP_PORT = int(SMTP_PORT)   # Only convert if not None
 
     digest_files = sorted(Path("data/digest").glob("*.html"))
     if not digest_files:
@@ -27,7 +38,6 @@ def send_digest_email():
     # Read HTML
     html_content = latest_digest.read_text(encoding="utf-8")
 
-    # Email message
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Your Daily Job Digest"
     msg["From"] = SENDER
@@ -35,7 +45,6 @@ def send_digest_email():
 
     msg.attach(MIMEText(html_content, "html"))
 
-    # Secure SSL connection
     context = ssl.create_default_context()
 
     try:
