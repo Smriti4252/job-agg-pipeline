@@ -1,3 +1,4 @@
+# ...existing code...
 import os
 import smtplib
 import ssl
@@ -10,34 +11,43 @@ def send_digest_email():
 
     load_dotenv()
 
-    # 🔍 BETTER DEBUG PRINTS — show exact raw string including spaces!
-    print("DEBUG RAW SMTP_HOST  =", repr(os.getenv("SMTP_HOST")))
-    print("DEBUG RAW SMTP_PORT  =", repr(os.getenv("SMTP_PORT")))
-    print("DEBUG RAW SMTP_USER  =", repr(os.getenv("SMTP_USER")))
-    print("DEBUG RAW SMTP_PASS  =", "****" if os.getenv("SMTP_PASSWORD") else None)
-    print("DEBUG RAW SMTP_FROM  =", repr(os.getenv("SMTP_FROM")))
-    print("DEBUG RAW DIGEST_TO  =", repr(os.getenv("DIGEST_TO")))
+    def _clean_env(name):
+        v = os.getenv(name)
+        return v.strip() if isinstance(v, str) and v.strip() != "" else None
+
+    # 🔍 CLEANED DEBUG PRINTS — show exact cleaned string
+    SMTP_HOST = _clean_env("SMTP_HOST")
+    SMTP_PORT = _clean_env("SMTP_PORT")
+    SMTP_USER = _clean_env("SMTP_USER")
+    PASSWORD = _clean_env("SMTP_PASSWORD")
+    SMTP_FROM = _clean_env("SMTP_FROM")
+    RECIPIENT = _clean_env("DIGEST_TO")
+
+    print("DEBUG CLEANED SMTP_HOST  =", repr(SMTP_HOST))
+    print("DEBUG CLEANED SMTP_PORT  =", repr(SMTP_PORT))
+    print("DEBUG CLEANED SMTP_USER  =", repr(SMTP_USER))
+    print("DEBUG CLEANED SMTP_PASS  =", "****" if PASSWORD else None)
+    print("DEBUG CLEANED SMTP_FROM  =", repr(SMTP_FROM))
+    print("DEBUG CLEANED DIGEST_TO  =", repr(RECIPIENT))
     print("-" * 60)
 
-    SMTP_HOST = os.getenv("SMTP_HOST")
-    SMTP_PORT = os.getenv("SMTP_PORT")
-    SENDER = os.getenv("SMTP_USER")
-    PASSWORD = os.getenv("SMTP_PASSWORD")
-    RECIPIENT = os.getenv("DIGEST_TO")
+    # choose header From vs login sender
+    SENDER = SMTP_USER or SMTP_FROM
+    FROM_HEADER = SMTP_FROM or SENDER
 
     # Check required fields
     if not SMTP_HOST:
         print(" ERROR: SMTP_HOST is missing!")
         return
 
-    if SMTP_PORT:
-        try:
-            SMTP_PORT = int(SMTP_PORT)
-        except:
-            print(" ERROR: SMTP_PORT is not a valid number:", SMTP_PORT)
-            return
-    else:
+    if not SMTP_PORT:
         print(" ERROR: SMTP_PORT is missing!")
+        return
+
+    try:
+        SMTP_PORT = int(SMTP_PORT)
+    except ValueError:
+        print(" ERROR: SMTP_PORT is not a valid number:", SMTP_PORT)
         return
 
     # Find latest digest
@@ -54,9 +64,21 @@ def send_digest_email():
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Your Daily Job Digest"
-    msg["From"] = SENDER
-    msg["To"] = RECIPIENT
+    msg["From"] = FROM_HEADER
 
+    # allow multiple recipients separated by comma or semicolon
+    recipients = []
+    if RECIPIENT:
+        for part in RECIPIENT.replace(";", ",").split(","):
+            part = part.strip()
+            if part:
+                recipients.append(part)
+
+    if not recipients:
+        print(" ERROR: No recipient address provided in DIGEST_TO")
+        return
+
+    msg["To"] = ", ".join(recipients)
     msg.attach(MIMEText(html_content, "html"))
 
     context = ssl.create_default_context()
@@ -64,8 +86,10 @@ def send_digest_email():
     try:
         print(f"🔌 Connecting to SMTP: host={repr(SMTP_HOST)}, port={SMTP_PORT}")
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
-            server.login(SENDER, PASSWORD)
-            server.sendmail(SENDER, RECIPIENT, msg.as_string())
+            # only attempt login if we have credentials
+            if SENDER and PASSWORD:
+                server.login(SENDER, PASSWORD)
+            server.sendmail(FROM_HEADER, recipients, msg.as_string())
 
         print(" Email sent successfully!")
 
@@ -77,3 +101,4 @@ def send_digest_email():
 
 if __name__ == "__main__":
     send_digest_email()
+# ...existing code...
