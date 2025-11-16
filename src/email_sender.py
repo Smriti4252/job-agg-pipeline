@@ -10,13 +10,14 @@ def send_digest_email():
 
     load_dotenv()
 
-    # DEBUG PRINTS — Yeh line batayegi GitHub Actions ko env aa bhi raha hai ya nahi
-    print("DEBUG: SMTP_HOST      =", os.getenv("SMTP_HOST"))
-    print("DEBUG: SMTP_PORT      =", os.getenv("SMTP_PORT"))
-    print("DEBUG: SMTP_USER      =", os.getenv("SMTP_USER"))
-    print("DEBUG: SMTP_PASSWORD  =", "****" if os.getenv("SMTP_PASSWORD") else None)
-    print("DEBUG: SMTP_FROM      =", os.getenv("SMTP_FROM"))
-    print("DEBUG: DIGEST_TO      =", os.getenv("DIGEST_TO"))
+    # 🔍 BETTER DEBUG PRINTS — show exact raw string including spaces!
+    print("DEBUG RAW SMTP_HOST  =", repr(os.getenv("SMTP_HOST")))
+    print("DEBUG RAW SMTP_PORT  =", repr(os.getenv("SMTP_PORT")))
+    print("DEBUG RAW SMTP_USER  =", repr(os.getenv("SMTP_USER")))
+    print("DEBUG RAW SMTP_PASS  =", "****" if os.getenv("SMTP_PASSWORD") else None)
+    print("DEBUG RAW SMTP_FROM  =", repr(os.getenv("SMTP_FROM")))
+    print("DEBUG RAW DIGEST_TO  =", repr(os.getenv("DIGEST_TO")))
+    print("-" * 60)
 
     SMTP_HOST = os.getenv("SMTP_HOST")
     SMTP_PORT = os.getenv("SMTP_PORT")
@@ -24,18 +25,31 @@ def send_digest_email():
     PASSWORD = os.getenv("SMTP_PASSWORD")
     RECIPIENT = os.getenv("DIGEST_TO")
 
-    if SMTP_PORT:
-        SMTP_PORT = int(SMTP_PORT)   # Only convert if not None
+    # Check required fields
+    if not SMTP_HOST:
+        print(" ERROR: SMTP_HOST is missing!")
+        return
 
+    if SMTP_PORT:
+        try:
+            SMTP_PORT = int(SMTP_PORT)
+        except:
+            print(" ERROR: SMTP_PORT is not a valid number:", SMTP_PORT)
+            return
+    else:
+        print(" ERROR: SMTP_PORT is missing!")
+        return
+
+    # Find latest digest
     digest_files = sorted(Path("data/digest").glob("*.html"))
     if not digest_files:
-        print("❌ No digest file found.")
+        print(" No digest file found.")
         return
 
     latest_digest = digest_files[-1]
     print(f"📧 Sending digest: {latest_digest}")
 
-    # Read HTML
+    # Read email HTML
     html_content = latest_digest.read_text(encoding="utf-8")
 
     msg = MIMEMultipart("alternative")
@@ -48,16 +62,17 @@ def send_digest_email():
     context = ssl.create_default_context()
 
     try:
+        print(f"🔌 Connecting to SMTP: host={repr(SMTP_HOST)}, port={SMTP_PORT}")
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
             server.login(SENDER, PASSWORD)
             server.sendmail(SENDER, RECIPIENT, msg.as_string())
 
-        print("✅ Email sent successfully!")
+        print(" Email sent successfully!")
 
     except smtplib.SMTPAuthenticationError as e:
-        print("❌ Authentication failed:", e)
+        print(" Authentication failed:", e)
     except Exception as e:
-        print("❌ Error sending email:", e)
+        print(" Error sending email:", e)
 
 
 if __name__ == "__main__":
