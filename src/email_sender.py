@@ -1,104 +1,79 @@
-# ...existing code...
+# Loads .env and sends latest HTML digest via SMTP SSL.
+
 import os
 import smtplib
 import ssl
+from pathlib import Path
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from dotenv import load_dotenv
-from pathlib import Path
+
+DIGEST_DIR = Path("data/digest")
+
+
+def _clean_env(name: str):
+    v = os.getenv(name)
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
+def _latest_digest():
+    files = sorted(DIGEST_DIR.glob("*.html"))
+    return files[-1] if files else None
+
 
 def send_digest_email():
-
     load_dotenv()
 
-    def _clean_env(name):
-        v = os.getenv(name)
-        return v.strip() if isinstance(v, str) and v.strip() != "" else None
+    smtp_host = _clean_env("SMTP_HOST")
+    smtp_port = _clean_env("SMTP_PORT")
+    smtp_user = _clean_env("SMTP_USER")
+    smtp_password = _clean_env("SMTP_PASSWORD")
+    smtp_from = _clean_env("SMTP_FROM") or smtp_user
+    digest_to = _clean_env("DIGEST_TO")
 
-    # 🔍 CLEANED DEBUG PRINTS — show exact cleaned string
-    SMTP_HOST = _clean_env("SMTP_HOST")
-    SMTP_PORT = _clean_env("SMTP_PORT")
-    SMTP_USER = _clean_env("SMTP_USER")
-    PASSWORD = _clean_env("SMTP_PASSWORD")
-    SMTP_FROM = _clean_env("SMTP_FROM")
-    RECIPIENT = _clean_env("DIGEST_TO")
-
-    print("DEBUG CLEANED SMTP_HOST  =", repr(SMTP_HOST))
-    print("DEBUG CLEANED SMTP_PORT  =", repr(SMTP_PORT))
-    print("DEBUG CLEANED SMTP_USER  =", repr(SMTP_USER))
-    print("DEBUG CLEANED SMTP_PASS  =", "****" if PASSWORD else None)
-    print("DEBUG CLEANED SMTP_FROM  =", repr(SMTP_FROM))
-    print("DEBUG CLEANED DIGEST_TO  =", repr(RECIPIENT))
-    print("-" * 60)
-
-    # choose header From vs login sender
-    SENDER = SMTP_USER or SMTP_FROM
-    FROM_HEADER = SMTP_FROM or SENDER
-
-    # Check required fields
-    if not SMTP_HOST:
-        print(" ERROR: SMTP_HOST is missing!")
-        return
-
-    if not SMTP_PORT:
-        print(" ERROR: SMTP_PORT is missing!")
+    # sanity checks
+    if not (smtp_host and smtp_port and smtp_user and smtp_password and digest_to):
+        print("Missing SMTP config in environment. Check .env.")
+        print("DEBUG:", smtp_host, smtp_port, smtp_user is not None, bool(digest_to))
         return
 
     try:
-        SMTP_PORT = int(SMTP_PORT)
+        smtp_port = int(smtp_port)
     except ValueError:
-        print(" ERROR: SMTP_PORT is not a valid number:", SMTP_PORT)
+        print("SMTP_PORT must be an integer.")
         return
 
-    # Find latest digest
-    digest_files = sorted(Path("data/digest").glob("*.html"))
-    if not digest_files:
-        print(" No digest file found.")
+    recipients = [r.strip() for r in digest_to.replace(";", ",").split(",") if r.strip()]
+    if not recipients:
+        print("No recipients found in DIGEST_TO.")
         return
 
-    latest_digest = digest_files[-1]
-    print(f"📧 Sending digest: {latest_digest}")
+    latest = _latest_digest()
+    if not latest:
+        print("No digest HTML found in data/digest.")
+        return
 
-    # Read email HTML
-    html_content = latest_digest.read_text(encoding="utf-8")
+    print(f" Sending digest: {latest}")
+    html = latest.read_text(encoding="utf-8")
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Your Daily Job Digest"
-    msg["From"] = FROM_HEADER
-
-    # allow multiple recipients separated by comma or semicolon
-    recipients = []
-    if RECIPIENT:
-        for part in RECIPIENT.replace(";", ",").split(","):
-            part = part.strip()
-            if part:
-                recipients.append(part)
-
-    if not recipients:
-        print(" ERROR: No recipient address provided in DIGEST_TO")
-        return
-
+    msg["From"] = smtp_from
     msg["To"] = ", ".join(recipients)
-    msg.attach(MIMEText(html_content, "html"))
+    msg.attach(MIMEText(html, "html"))
 
-    context = ssl.create_default_context()
+    ctx = ssl.create_default_context()
 
     try:
-        print(f"🔌 Connecting to SMTP: host={repr(SMTP_HOST)}, port={SMTP_PORT}")
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
-            # only attempt login if we have credentials
-            if SENDER and PASSWORD:
-                server.login(SENDER, PASSWORD)
-            server.sendmail(FROM_HEADER, recipients, msg.as_string())
-
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx) as s:
+            s.login(smtp_user, smtp_password)
+            s.sendmail(smtp_from, recipients, msg.as_string())
         print(" Email sent successfully!")
-
     except smtplib.SMTPAuthenticationError as e:
-        print(" Authentication failed:", e)
+        print("Authentication failed:", e)
     except Exception as e:
-        print(" Error sending email:", e)
+        print("Error sending email:", e)
 
 
 if __name__ == "__main__":
     send_digest_email()
-# ...existing code...

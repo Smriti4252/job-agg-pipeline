@@ -1,145 +1,60 @@
-import os
+# Turn Bronze JSON files + bronze_raw DB rows into a normalized silver_jobs table.
+
 import json
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from ingest_common import get_db_conn, PIPELINE_DB
 
-# ---------------------------------------------------------------------
-# PATHS
-# ---------------------------------------------------------------------
 BRONZE_DIR = Path("data/bronze")
-DB_PATH = Path("data/pipeline.db")
 
 
-# ---------------------------------------------------------------------
-# DB CONNECTION
-# ---------------------------------------------------------------------
-def get_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(DB_PATH)
+def _parse_remoteok(item: Dict[str, Any]) -> Dict:
+    return {
+        "job_id": item.get("id") or item.get("slug") or "",
+        "title": item.get("position") or item.get("title"),
+        "company": item.get("company") or item.get("company_name"),
+        "location": item.get("location") or item.get("candidate_required_location") or "",
+        "remote": 1 if item.get("remote") in (True, "true", 1, "1") else 0,
+        "url": item.get("url") or item.get("apply_url") or "",
+        "description": item.get("description") or "",
+        "post_date": item.get("date") or item.get("publication_date") or None,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "salary": item.get("salary"),
+        "tags": ", ".join(item.get("tags") or [])
+    }
 
 
-# ---------------------------------------------------------------------
-# NORMALIZE RAW API PAYLOAD → SILVER FORMAT
-# ---------------------------------------------------------------------
-def normalize_payload_to_silver(payload, source):
-    """
-    Convert raw API-specific JSON into a unified Silver structure.
-    Handles differences in API shapes.
-    """
-
-    rows = []
-    fetched_at = datetime.now().isoformat()
-
-    # ----------------------------------------------------------
-    # FIX: Extract correct list of job items for each API
-    # ----------------------------------------------------------
-    if source == "remoteok":
-        # RemoteOK returns a LIST
-        data = [i for i in payload if isinstance(i, dict)]
-
-    elif source == "remotive":
-        # Remotive returns an OBJECT → extract the "jobs" list
-        data = payload.get("jobs", [])
-
-    elif source == "arbeitnow":
-        # ArbeitNow is inconsistent: list OR inside "data"
-        if isinstance(payload, list):
-            data = payload
-        else:
-            data = payload.get("data", [])
-
-    else:
-        print(f"⚠ Unknown API source: {source}, skipping.")
-        return rows
-
-    # ----------------------------------------------------------
-    # Normalize each job record
-    # ----------------------------------------------------------
-    for item in data:
-
-        if source == "remoteok":
-            job_id = str(item.get("id"))
-            title = item.get("position") or item.get("title")
-            company = item.get("company")
-            location = item.get("location")
-            remote = 1 if "remote" in str(location).lower() else 0
-            url = item.get("url")
-            description = item.get("description")
-            post_date = item.get("date")
-            salary = item.get("salary")
-            tags = ", ".join(item.get("tags") or [])
-
-        elif source == "remotive":
-            job_id = str(item.get("id"))
-            title = item.get("title")
-            company = item.get("company_name")
-            location = item.get("candidate_required_location")
-            remote = 1
-            url = item.get("url")
-            description = item.get("description")
-            post_date = item.get("publication_date")
-            salary = item.get("salary")
-            tags = ", ".join(item.get("tags") or [])
-
-        elif source == "arbeitnow":
-            job_id = str(item.get("slug"))
-            title = item.get("title")
-            company = item.get("company_name")
-            location = item.get("location")
-            remote = 1 if item.get("remote") else 0
-            url = item.get("url")
-            description = item.get("description")
-            post_date = item.get("date_posted")
-            salary = item.get("salary")
-            tags = ", ".join(item.get("tags") or [])
-
-        # --------------------------
-        # Scoring + outreach
-        # --------------------------
-        score = 1.0
-        if "junior" in (title or "").lower():
-            score += 1
-        if remote:
-            score += 0.5
-
-        outreach_message = f"Hi, I came across your '{title}' role at {company}."
-
-        rows.append((
-            job_id, title, company, location, remote, url,
-            description, post_date, fetched_at, salary,
-            tags, score, outreach_message
-        ))
-
-    return rows
+def _parse_remotive(item: Dict[str, Any]) -> Dict:
+    return {
+        "job_id": item.get("id") or "",
+        "title": item.get("title"),
+        "company": item.get("company_name"),
+        "location": item.get("candidate_required_location") or "",
+        "remote": 1,
+        "url": item.get("url") or "",
+        "description": item.get("description") or "",
+        "post_date": item.get("publication_date") or None,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "salary": item.get("salary"),
+        "tags": ", ".join(item.get("tags") or [])
+    }
 
 
+def _guess_source_from_filename(name: str) -> Optional[str]:
+    if "remoteok" in name:
+        return "remoteok"
+    if "remotive" in name:
+        return "remotive"
+    if "arbeit" in name:
+        return "arbeitnow"
+    return None
 
-# ---------------------------------------------------------------------
-# MAIN PIPELINE: Bronze JSON → Silver SQLite
-# ---------------------------------------------------------------------
-def bronze_to_silver():
-    print("🔄 Starting Bronze → Silver pipeline...")
 
-    conn = get_db()
-    cur = conn.cursor()
-
-    # ----------------------------------------------------------
-    # Create Bronze table
-    # ----------------------------------------------------------
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS bronze_raw (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT,
-            raw_json TEXT,
-            fetched_at TEXT
-        )
-    """)
-
-    # ----------------------------------------------------------
-    # Create Silver table
-    # ----------------------------------------------------------
-    cur.execute("""
+def _ensure_tables(conn: sqlite3.Connection):
+    conn.executescript(
+        """
         CREATE TABLE IF NOT EXISTS silver_jobs (
             job_id TEXT PRIMARY KEY,
             title TEXT,
@@ -151,69 +66,89 @@ def bronze_to_silver():
             post_date TEXT,
             fetched_at TEXT,
             salary TEXT,
-            tags TEXT,
-            score REAL,
-            outreach_message TEXT
-        )
-    """)
+            tags TEXT
+        );
 
-    now_str = datetime.now(timezone.utc).isoformat()
+        -- keep bronze_raw in DB via ingest_common; no change here
+        """
+    )
+    conn.commit()
 
-    # ----------------------------------------------------------
-    # Load all Bronze JSON files
-    # ----------------------------------------------------------
-    json_files = list(BRONZE_DIR.glob("*.json"))
 
-    if not json_files:
-        print("❌ No Bronze JSON files found.")
-        return
+def _load_json_files() -> List[Dict]:
+    files = sorted(BRONZE_DIR.glob("*.json"))
+    out = []
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            # our ingesters write lists
+            if isinstance(data, list):
+                source = _guess_source_from_filename(f.name) or "unknown"
+                for item in data:
+                    out.append({"_source": source, **item})
+        except Exception as e:
+            print(f"Could not read {f.name}: {e}")
+    return out
 
-    for file in json_files:
 
-        # Extract API source correctly (last part of filename)
-        # Example: 20251115T141225Z_remoteok.json → remoteok
-        source = file.stem.split("_")[-1].lower().strip()
+def normalize_and_write():
+    """Main entry: read bronze JSONs, normalize, write into silver_jobs table."""
+    rows = _load_json_files()
+    if not rows:
+        print(" No bronze JSON files found.")
+        return 0
 
-        print(f"📥 Loading Bronze file: {file}  (source={source})")
+    conn = get_db_conn(PIPELINE_DB)
+    _ensure_tables(conn)
+    cur = conn.cursor()
 
-        # -------------------------------
-        # Load JSON file
-        # -------------------------------
-        with open(file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    inserted = 0
+    for r in rows:
+        src = r.pop("_source", "")
+        parsed = _parse_remoteok(r) if src == "remoteok" else (_parse_remotive(r) if src == "remotive" else {
+            "job_id": r.get("id") or r.get("slug") or "",
+            "title": r.get("title") or r.get("position"),
+            "company": r.get("company") or r.get("company_name"),
+            "location": r.get("location") or r.get("candidate_required_location") or "",
+            "remote": 1 if r.get("remote") else 0,
+            "url": r.get("url") or r.get("apply_url") or "",
+            "description": r.get("description") or "",
+            "post_date": r.get("date") or r.get("publication_date") or None,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "salary": r.get("salary"),
+            "tags": ", ".join(r.get("tags") or [])
+        })
 
-        # Insert raw JSON into Bronze table
-        cur.execute(
-            "INSERT INTO bronze_raw (source, raw_json, fetched_at) VALUES (?, ?, ?)",
-            (source, json.dumps(data), now_str)
-        )
+        try:
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO silver_jobs
+                (job_id, title, company, location, remote, url, description, post_date, fetched_at, salary, tags)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(parsed.get("job_id") or ""),
+                    parsed.get("title"),
+                    parsed.get("company"),
+                    parsed.get("location"),
+                    int(parsed.get("remote") or 0),
+                    parsed.get("url"),
+                    parsed.get("description"),
+                    parsed.get("post_date"),
+                    parsed.get("fetched_at"),
+                    parsed.get("salary"),
+                    parsed.get("tags"),
+                ),
+            )
+            inserted += 1
+        except Exception as e:
+            print("Failed to insert row:", e)
 
-        # -------------------------------
-        # Normalize → Silver rows
-        # -------------------------------
-        rows = normalize_payload_to_silver(data, source)
-
-        for row in rows:
-            cur.execute("""
-                INSERT OR REPLACE INTO silver_jobs (
-                    job_id, title, company, location, remote, url,
-                    description, post_date, fetched_at, salary,
-                    tags, score, outreach_message
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, row)
-
-    # -------------------------------
-    # Save & Close
-    # -------------------------------
     conn.commit()
     conn.close()
+    print(f" Bronze → Silver done. Inserted/updated {inserted} rows.")
+    return inserted
 
-    print("✅ Bronze → Silver processing complete!")
 
-
-# ---------------------------------------------------------------------
-# RUN SCRIPT
-# ---------------------------------------------------------------------
 if __name__ == "__main__":
-    bronze_to_silver()
+    normalize_and_write()

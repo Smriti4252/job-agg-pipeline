@@ -1,161 +1,114 @@
-import os
+# Build a simple daily HTML digest out of Gold jobs.
+
 import sqlite3
-import pandas as pd
 from pathlib import Path
-from datetime import datetime, timedelta
-
-DB_PATH = Path("data/pipeline.db")
-DIGEST_DIR = Path("data/digest")
-DIGEST_DIR.mkdir(parents=True, exist_ok=True)
+from datetime import datetime, timedelta, timezone
+import pandas as pd
 
 
-# -----------------------------------------------------------------------------
-# Load Gold Table from SQLite
-# -----------------------------------------------------------------------------
-def load_gold():
-    if not DB_PATH.exists():
-        raise FileNotFoundError("❌ pipeline.db not found!")
+DB_FILE = Path("data/pipeline.db")
+DIGEST_FOLDER = Path("data/digest")
+DIGEST_FOLDER.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(DB_PATH)
+
+def load_gold_table():
+    """Pull all Gold jobs from SQLite."""
+    conn = sqlite3.connect(DB_FILE)
     df = pd.read_sql("SELECT * FROM gold_jobs", conn)
     conn.close()
 
     if df.empty:
-        raise ValueError("❌ Gold table contains zero rows!")
+        return df
 
-    # Normalize timestamps
-    df["post_date"] = pd.to_datetime(df["post_date"], errors="coerce")
-    df["fetched_at"] = pd.to_datetime(df["fetched_at"], errors="coerce")
-
-    # Convert any tz-aware → UTC tz-naive
-    try:
-        df["post_date"] = df["post_date"].dt.tz_convert("UTC").dt.tz_localize(None)
-    except:
-        pass
+    # Make sure timestamps are in good shape
+    df["post_date"] = pd.to_datetime(df["post_date"], errors="coerce", utc=True)
+    df["fetched_at"] = pd.to_datetime(df["fetched_at"], errors="coerce", utc=True)
 
     return df
 
 
-# -----------------------------------------------------------------------------
-# Build Digest Sections
-# -----------------------------------------------------------------------------
-def create_digest_sections(df):
-    now = datetime.utcnow()
+def render_job_block(row):
+    """
+    Small HTML snippet for one job.
+    Keep it readable—digest emails are meant to be skimmed.
+    """
+    desc = (row["description"] or "").strip()
+    short = desc[:200] + ("..." if len(desc) > 200 else "")
 
-    # 1) Top 20 highest scoring jobs
-    top20 = df.sort_values("score", ascending=False).head(20)
-
-    # 2) All remote jobs
-    remote = df[df["remote"] == 1]
-
-    # 3) Fresh jobs (posted in last 3 days)
-    df_filtered = df.dropna(subset=["post_date"])
-    threshold = now - timedelta(days=3)
-    fresh = df_filtered[df_filtered["post_date"] >= threshold]
-
-    return top20, remote, fresh
-
-
-# -----------------------------------------------------------------------------
-# Format Job Entry for Digest
-# -----------------------------------------------------------------------------
-def fmt(job):
-    return (
-        f"- **{job['title']}** at *{job['company']}*\n"
-        f"  Location: {job['location']} | Score: {job['score']}\n"
-        f"  URL: {job['url']}\n"
-    )
+    return f"""
+        <div style="margin-bottom: 18px;">
+            <div><b>{row['title']}</b> — {row['company']}</div>
+            <div style="font-size: 14px; color:#444;">{row['location']}</div>
+            <a href="{row['url']}" target="_blank">Apply Link</a>
+            <div style="margin-top: 6px; font-size: 13px; color:#666;">
+                {short}
+            </div>
+        </div>
+    """
 
 
-# -----------------------------------------------------------------------------
-# Generate Text Digest
-# -----------------------------------------------------------------------------
-def generate_text_digest(top20, remote, fresh, snapshot):
-    text = []
-    text.append(f"📊 JOB DIGEST — {snapshot}\n")
-    text.append("=====================================\n\n")
+def render_section(df, heading):
+    """Convert a dataframe slice into a titled HTML section."""
+    if df.empty:
+        return f"<h2>{heading}</h2><p>No jobs found.</p>"
 
-    text.append("🔥 TOP 20 JOBS BY SCORE\n")
-    text.append("-------------------------------------\n")
-    for _, r in top20.iterrows():
-        text.append(fmt(r))
-    text.append("\n\n")
-
-    text.append("🌎 REMOTE JOBS\n")
-    text.append("-------------------------------------\n")
-    for _, r in remote.iterrows():
-        text.append(fmt(r))
-    text.append("\n\n")
-
-    text.append("🆕 FRESH JOBS (Last 3 days)\n")
-    text.append("-------------------------------------\n")
-    for _, r in fresh.iterrows():
-        text.append(fmt(r))
-    text.append("\n\n")
-
-    return "".join(text)
+    blocks = [render_job_block(r) for _, r in df.iterrows()]
+    return f"<h2>{heading}</h2>\n" + "\n".join(blocks)
 
 
-# -----------------------------------------------------------------------------
-# Generate HTML Digest
-# -----------------------------------------------------------------------------
-def generate_html_digest(top20, remote, fresh, snapshot):
-    def block(title, df):
-        items = "".join(
-            f"""
-            <li><b>{row['title']}</b> at {row['company']}<br>
-            Location: {row['location']} | Score: {row['score']}<br>
-            <a href="{row['url']}">Apply Link</a></li><br>
-            """
-            for _, row in df.iterrows()
-        )
-        return f"<h2>{title}</h2><ul>{items}</ul>"
+def build_html_digest(top20, remote_only, fresh_jobs):
+    """Combine all sections into the final HTML email."""
+    now = datetime.now(timezone.utc)
 
-    html = f"""
+    return f"""
     <html>
-    <body>
-    <h1>📊 Job Digest — {snapshot}</h1>
-    {block("🔥 Top 20 Jobs", top20)}
-    {block("🌎 Remote Jobs", remote)}
-    {block("🆕 Fresh Jobs (Last 3 Days)", fresh)}
+    <body style="font-family: Arial, sans-serif; padding: 20px;">
+
+        <h1>Your Daily Job Digest</h1>
+
+        {render_section(top20, "Top 20 Jobs (By Score)")}
+
+        {render_section(remote_only, "Remote-Friendly Roles")}
+
+        {render_section(fresh_jobs, "Fresh Listings (Last 3 Days)")}
+
+        <hr>
+        <div style="font-size: 12px; color:#777;">
+            Generated at {now.strftime("%Y-%m-%d %H:%M:%S %Z")}
+        </div>
+
     </body>
     </html>
     """
-    return html
 
 
-# -----------------------------------------------------------------------------
-# Main Function
-# -----------------------------------------------------------------------------
 def generate_digest():
-    print("📥 Loading Gold table...")
-    df = load_gold()
+    print("→ Loading Gold data...")
+    df = load_gold_table()
 
-    print("⚙️ Preparing digest sections...")
-    top20, remote, fresh = create_digest_sections(df)
+    if df.empty:
+        print("   Gold table is empty.")
+        return
 
-    snapshot = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    filename_ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    # Top 20 by score
+    top20 = df.sort_values("score", ascending=False).head(20)
 
-    # Generate text digest
-    text_output = generate_text_digest(top20, remote, fresh, snapshot)
-    text_path = DIGEST_DIR / f"digest_{filename_ts}.txt"
-    with open(text_path, "w", encoding="utf-8") as f:
-        f.write(text_output)
+    # Remote-only
+    remote_only = df[df["remote"] == 1].sort_values("score", ascending=False).head(20)
 
-    # Generate HTML digest
-    html_output = generate_html_digest(top20, remote, fresh, snapshot)
-    html_path = DIGEST_DIR / f"digest_{filename_ts}.html"
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html_output)
+    # Last 3 days
+    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    fresh = df[df["post_date"] >= cutoff].sort_values("post_date", ascending=False).head(20)
 
-    print(f"📄 Digest TXT saved at: {text_path}")
-    print(f"🌐 Digest HTML saved at: {html_path}")
-    print("✅ Digest generation complete!")
+    # Build & write HTML digest
+    html = build_html_digest(top20, remote_only, fresh)
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_file = DIGEST_FOLDER / f"digest_{ts}.html"
+    out_file.write_text(html, encoding="utf-8")
+
+    print(f"✔ Digest generated → {out_file}")
 
 
-# -----------------------------------------------------------------------------
-# Run Script
-# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     generate_digest()

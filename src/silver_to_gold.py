@@ -1,141 +1,117 @@
-import os
+# Read silver_jobs table, dedupe, score, add outreach message, save gold snapshot
+# and write/replace gold_jobs table in pipeline DB.
+
 import sqlite3
-import pandas as pd
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import List
+import pandas as pd
+from ingest_common import get_db_conn, PIPELINE_DB
 
-DB_PATH = Path("data/pipeline.db")
-GOLD_DIR = Path("data/gold")
-
-
-def get_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(DB_PATH)
+OUTPUT_DIR = Path("data/gold")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ---------------------------------------------------------------
-# SCORING LOGIC
-# ---------------------------------------------------------------
-def calculate_score(row):
-    score = 0
-
-    title = (row["title"] or "").lower()
-    description = (row["description"] or "").lower()
-
-    entry_keywords = ["junior", "entry", "fresher", "graduate", "trainee"]
-    tech_keywords = ["python", "sql", "etl", "pipeline", "data engineer"]
-
-    if any(k in title for k in entry_keywords):
-        score += 2
-    if any(k in description for k in entry_keywords):
-        score += 1
-
-    if row["remote"] == 1:
-        score += 1
-
-    if any(k in title for k in tech_keywords):
-        score += 1
-
-    return score
+def _load_silver(conn: sqlite3.Connection) -> pd.DataFrame:
+    try:
+        df = pd.read_sql("SELECT * FROM silver_jobs", conn)
+    except Exception:
+        return pd.DataFrame()
+    return df
 
 
-# ---------------------------------------------------------------
-# Outreach message generator
-# ---------------------------------------------------------------
-def generate_outreach_message(title, company):
-    if not company:
-        company = "your team"
+def _canonical_url(u: str) -> str:
+    if not isinstance(u, str) or u.strip() == "":
+        return ""
+    return u.split("?")[0].rstrip("/")
 
+
+def _score_row(row) -> float:
+    score = 0.0
+    title = str(row.get("title") or "").lower()
+    desc = str(row.get("description") or "").lower()
+    if any(k in title for k in ("junior", "entry", "fresher", "intern", "graduate")):
+        score += 2.0
+    if row.get("remote") == 1:
+        score += 1.0
+    # small heuristics: keywords that matter
+    for kw in ("etl", "sql", "python", "dbt", "snowflake", "spark"):
+        if kw in title or kw in desc:
+            score += 0.5
+    return round(score, 2)
+
+
+def _outreach_text(title: str, company: str) -> str:
+    company = company or "your team"
     return (
-        f"Hi, I came across your '{title}' position at {company}. "
-        f"I’m really interested because it aligns well with my hands-on work in ETL pipelines, "
-        f"SQL, Python, and modern data engineering tools. "
-        f"I would love to connect and discuss the opportunity further!"
+        f"Hi — I found your {title} role at {company}. "
+        "I’m building data pipelines and have hands-on SQL & Python experience. "
+        "Would love to connect — thanks!"
     )
 
 
-# ---------------------------------------------------------------
-# MAIN GOLD PIPELINE
-# ---------------------------------------------------------------
-def silver_to_gold():
-    print("🔄 Starting Silver → Gold processing...")
+def run():
+    print(" Starting Silver → Gold...")
 
-    if not DB_PATH.exists():
-        print("❌ SQLite warehouse database missing!")
-        print(f"Expected at: {DB_PATH}")
-        return 0
-
-    conn = get_db()
-
-    # load Silver
-    df = pd.read_sql("SELECT * FROM silver_jobs", conn)
-
+    conn = get_db_conn(PIPELINE_DB)
+    df = _load_silver(conn)
     if df.empty:
-        print("❌ No rows found in Silver table.")
+        print(" No rows in silver_jobs.")
+        conn.close()
         return 0
 
-    # ---------------------------------------------------------------
-    # CLEAN
-    # ---------------------------------------------------------------
-    print("✨ Cleaning data...")
-    df = df.dropna(subset=["url"])
-    df["title"] = df["title"].fillna("Untitled")
-    df["company"] = df["company"].fillna("Unknown")
-    df["location"] = df["location"].fillna("Unknown")
+    # ensure columns we use exist
+    df["url"] = df.get("url", "").astype(str)
+    df["title"] = df.get("title", "").astype(str)
+    df["company"] = df.get("company", "").astype(str)
+    df["description"] = df.get("description", "").astype(str)
+    df["post_date"] = pd.to_datetime(df.get("post_date"), errors="coerce")
+    df["fetched_at"] = pd.to_datetime(df.get("fetched_at"), errors="coerce")
+    df["remote"] = df.get("remote", 0).fillna(0).astype(int)
 
-    # ---------------------------------------------------------------
-    # DEDUPE by URL
-    # ---------------------------------------------------------------
-    print("✨ Removing duplicate jobs...")
-    df = df.sort_values("fetched_at", ascending=False)
-    df = df.drop_duplicates(subset=["url"], keep="first")
+    # drop rows without URL (can't dedupe) and title
+    df = df.dropna(subset=["url", "title"]).copy()
+    df["canon_url"] = df["url"].apply(_canonical_url)
 
-    # ---------------------------------------------------------------
-    # SCORING
-    # ---------------------------------------------------------------
-    print("✨ Scoring jobs...")
-    df["score"] = df.apply(calculate_score, axis=1)
+    # dedupe: keep newest fetched_at for same canonical URL
+    df = df.sort_values(by=["canon_url", "fetched_at"], ascending=[True, False])
+    df = df.drop_duplicates(subset=["canon_url"], keep="first").reset_index(drop=True)
 
-    # ---------------------------------------------------------------
-    # OUTREACH TEXT
-    # ---------------------------------------------------------------
-    print("✨ Adding outreach messages...")
-    df["outreach_message"] = df.apply(
-        lambda row: generate_outreach_message(row["title"], row["company"]),
-        axis=1
-    )
+    # scoring
+    df["score"] = df.apply(_score_row, axis=1)
 
-    # ---------------------------------------------------------------
-    # EXPORT SNAPSHOTS
-    # ---------------------------------------------------------------
-    GOLD_DIR.mkdir(parents=True, exist_ok=True)
-    snapshot = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    # outreach
+    df["outreach_message"] = df.apply(lambda r: _outreach_text(r["title"], r["company"]), axis=1)
 
-    csv_path = GOLD_DIR / f"gold_{snapshot}.csv"
-    parquet_path = GOLD_DIR / f"gold_{snapshot}.parquet"
+    # save snapshot
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    csv_path = OUTPUT_DIR / f"gold_{ts}.csv"
+    parquet_path = OUTPUT_DIR / f"gold_{ts}.parquet"
 
-    df.to_csv(csv_path, index=False)
-    df.to_parquet(parquet_path, index=False)
+    df_out = df[[
+        "job_id", "title", "company", "location", "remote", "url",
+        "description", "post_date", "fetched_at", "salary", "tags",
+        "score", "outreach_message"
+    ]].copy()
 
-    print(f"📁 Gold CSV saved at: {csv_path}")
-    print(f"📁 Gold Parquet saved at: {parquet_path}")
+    df_out.to_csv(csv_path, index=False)
+    try:
+        df_out.to_parquet(parquet_path, index=False)
+    except Exception:
+        # If pyarrow isn't available, ignore parquet (CSV is enough)
+        pass
 
-    # ---------------------------------------------------------------
-    # SAVE INTO SQLITE GOLD TABLE (New!)
-    # ---------------------------------------------------------------
-    print("🗄️ Writing Gold table into SQLite...")
-
+    # write gold_jobs table (replace)
     cur = conn.cursor()
-
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS gold_jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            job_id TEXT,
+            job_id TEXT PRIMARY KEY,
             title TEXT,
             company TEXT,
             location TEXT,
             remote INTEGER,
-            url TEXT UNIQUE,
+            url TEXT,
             description TEXT,
             post_date TEXT,
             fetched_at TEXT,
@@ -143,33 +119,45 @@ def silver_to_gold():
             tags TEXT,
             score REAL,
             outreach_message TEXT
-        )
-    """)
+        );
+        """
+    )
+    conn.commit()
 
-    for _, r in df.iterrows():
-        cur.execute("""
-            INSERT OR REPLACE INTO gold_jobs (
-                job_id, title, company, location, remote,
-                url, description, post_date, fetched_at,
-                salary, tags, score, outreach_message
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            r["job_id"], r["title"], r["company"], r["location"],
-            int(r["remote"]), r["url"], r["description"], r["post_date"],
-            r["fetched_at"], r["salary"], r["tags"],
-            float(r["score"]), r["outreach_message"]
+    # replace content
+    cur.execute("DELETE FROM gold_jobs;")
+    conn.commit()
+
+    insert_sql = """
+        INSERT INTO gold_jobs
+        (job_id, title, company, location, remote, url, description, post_date, fetched_at, salary, tags, score, outreach_message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    inserted = 0
+    for _, row in df_out.iterrows():
+        cur.execute(insert_sql, (
+            str(row.get("job_id") or ""),
+            row.get("title"),
+            row.get("company"),
+            row.get("location"),
+            int(row.get("remote") or 0),
+            row.get("url"),
+            row.get("description"),
+            (row.get("post_date").isoformat() if pd.notna(row.get("post_date")) else None),
+            (row.get("fetched_at").isoformat() if pd.notna(row.get("fetched_at")) else None),
+            row.get("salary"),
+            row.get("tags"),
+            float(row.get("score") or 0.0),
+            row.get("outreach_message"),
         ))
+        inserted += 1
 
     conn.commit()
     conn.close()
 
-    print("✅ Gold table successfully saved to SQLite!")
-    return len(df)
+    print(f" Gold snapshot written: {csv_path}  (rows: {inserted})")
+    return inserted
 
 
-# ---------------------------------------------------------------
-# RUN
-# ---------------------------------------------------------------
 if __name__ == "__main__":
-    silver_to_gold()
+    run()

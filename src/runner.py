@@ -1,40 +1,39 @@
+#orchestrator to run pipeline steps in sequence.
+
 import traceback
 
-from ingest_remoteok import fetch_remoteok
-from ingest_remotive import fetch_remotive
-from bronze_to_silver import normalize_all
-from silver_to_gold import dedupe_and_score
-from loader_to_snowflake import upload_gold_to_snowflake
+from ingest_remoteok import run as run_remoteok
+from ingest_remotive import run as run_remotive
+from bronze_to_silver import normalize_and_write as bronze_to_silver
+from silver_to_gold import run as silver_to_gold
+from loader_to_snowflake import upload_gold_to_snowflake  # optional if configured
 
 
 def main():
-    print("🚀 Starting Job Aggregation Pipeline...\n")
+    print("🚀 Starting Job Aggregation Pipeline\n")
 
     try:
-        # ---- BRONZE LAYER: RAW INGESTION ----
-        print("📥 Fetching RemoteOK jobs...")
-        fetch_remoteok()
+        print("📥 Step 1: Ingest RemoteOK")
+        run_remoteok()
 
-        print("📥 Fetching Remotive jobs...")
-        fetch_remotive()
+        print("📥 Step 2: Ingest Remotive")
+        run_remotive()
 
-        # ---- SILVER LAYER ----
-        print("\n🔄 Converting Bronze → Silver...")
-        normalize_all()
+        print("\n🔄 Step 3: Bronze → Silver (normalize)")
+        bronze_to_silver()
 
-        # ---- GOLD LAYER ----
-        print("\n🏆 Converting Silver → Gold...")
-        dedupe_and_score()
+        print("\n🏆 Step 4: Silver → Gold (dedupe & score)")
+        silver_to_gold()
 
-        # ---- LOAD TO SNOWFLAKE ----
-        print("\n❄️ Uploading Gold → Snowflake...")
-        upload_gold_to_snowflake()
+        print("\n❄️ Step 5: (optional) Push Gold to Snowflake")
+        try:
+            upload_gold_to_snowflake()
+        except Exception as e:
+            print("   Skipping Snowflake upload (not configured or failed):", e)
 
-        print("\n✨ Pipeline completed successfully!")
-
-    except Exception as e:
-        print("\n❌ Pipeline failed!")
-        print("Error:", e)
+        print("\n✨ Pipeline finished successfully.")
+    except Exception as exc:
+        print("\n❌ Pipeline failed:")
         traceback.print_exc()
 
 
