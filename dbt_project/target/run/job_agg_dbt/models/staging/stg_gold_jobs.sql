@@ -1,6 +1,7 @@
-{{ config(enabled=target.type == 'snowflake') }}
 
-with source_data as (
+  
+  create view "duckdb_local"."main"."stg_gold_jobs__dbt_tmp" as (
+    with source_data as (
     select
         job_id,
         title,
@@ -15,8 +16,9 @@ with source_data as (
         tags,
         score,
         outreach_message
-    from {{ source('job_data', 'gold_jobs') }}
+    from "JOB_AGG_DB"."GOLD"."gold_jobs"
 )
+
 select
     job_id,
     trim(title) as title,
@@ -34,3 +36,4 @@ select
 from source_data
 where trim(title) is not null
   and trim(title) <> ''
+  );

@@ -1,0 +1,17 @@
+version: 2
+
+models:
+  - name: gold_jobs
+    description: "Deduplicated, scored job listings"
+    columns:
+      - name: job_id
+        tests:
+          - not_null
+      - name: url
+        tests:
+          - unique
+      - name: title
+        tests:
+          - not_null
+  - name: job_metrics
+    description: "Aggregated metrics for jobs"

@@ -1,5 +1,3 @@
-{{ config(enabled=target.type == 'snowflake') }}
-
 with source_data as (
     select
         job_id,
@@ -15,8 +13,9 @@ with source_data as (
         tags,
         score,
         outreach_message
-    from {{ source('job_data', 'gold_jobs') }}
+    from "JOB_AGG_DB"."GOLD"."gold_jobs"
 )
+
 select
     job_id,
     trim(title) as title,

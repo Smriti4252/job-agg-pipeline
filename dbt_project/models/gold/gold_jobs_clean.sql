@@ -1,4 +1,4 @@
-{{ config(materialized='table') }}
+{{ config(materialized='table', enabled=target.type == 'snowflake') }}
 
 select
     JOB_ID,
