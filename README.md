@@ -185,5 +185,4 @@ dbt tests run automatically after every gold layer build:
 ## Author
 
 **Smriti Sharma** — Data Engineer
-**Smriti Sharma** — Data Engineer
 [LinkedIn](https://www.linkedin.com/in/smritisharma731/) · [GitHub](https://github.com/Smriti4252)
