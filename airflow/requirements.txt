@@ -1,0 +1,4 @@
+pyspark==4.1.2
+dbt-duckdb==1.10.1
+requests
+click==8.2.1

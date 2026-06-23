@@ -13,6 +13,11 @@ def get_spark_session(app_name: str = "job_agg_spark") -> SparkSession:
     os.environ["PYSPARK_PYTHON"] = sys.executable
     os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
+    # Hardcode HADOOP_HOME so it doesn't depend on the shell session having
+    # the env var set (e.g. when run.py is launched from a fresh terminal).
+    os.environ["HADOOP_HOME"] = "C:\\hadoop"
+    os.environ["PATH"] = os.environ["HADOOP_HOME"] + "\\bin;" + os.environ.get("PATH", "")
+
     builder = SparkSession.builder.master("local[*]").appName(app_name)
     builder = builder.config("spark.sql.shuffle.partitions", "4")
     builder = builder.config("spark.driver.bindAddress", "127.0.0.1")

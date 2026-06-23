@@ -17,7 +17,7 @@ clean-targets:
   - "dbt_packages"
 
 vars:
-  silver_path: "C:/Users/sharm/job-agg-pipeline/data/silver/silver.parquet"
+  silver_path: "/opt/airflow/project/data/silver/silver.parquet"
 
 models:
   job_agg_dbt:

@@ -1,8 +1,7 @@
 version: 2
-
 sources:
   - name: job_data
-    database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
-    schema: "{{ env_var('SNOWFLAKE_SCHEMA') }}"
+    database: "{{ env_var('SNOWFLAKE_DATABASE', 'local') }}"
+    schema: "{{ env_var('SNOWFLAKE_SCHEMA', 'main') }}"
     tables:
       - name: gold_jobs

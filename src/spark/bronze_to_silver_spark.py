@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from pyspark.sql import functions as F
-from pyspark.sql.types import StringType, IntegerType, ArrayType
+from pyspark.sql.types import StringType, IntegerType, ArrayType, StructType
 
 # Ensure src is on sys.path so module imports work when running the script directly
 ROOT_SRC = Path(__file__).resolve().parents[1]
@@ -29,9 +29,12 @@ def normalize(df):
     def safe_col(name):
         return F.col(name) if name in df.columns else F.lit(None)
 
-    # remote normalization: accept several truthy forms
+    # remote normalization: cast to string first to avoid BOOLEAN vs INT
+    # type mismatches across files (RemoteOK sometimes sends true/false,
+    # sometimes 0/1).
     def remote_expr(col):
-        return F.when((safe_col(col) == True) | (F.lower(safe_col(col).cast(StringType())) == "true") | (safe_col(col) == 1) | (safe_col(col) == "1"), F.lit(1)).otherwise(F.lit(0))
+        c = safe_col(col).cast(StringType())
+        return F.when((F.lower(c) == "true") | (c == "1"), F.lit(1)).otherwise(F.lit(0))
 
     # Common columns
     df = df.withColumn("job_id", F.coalesce(safe_col("id").cast(StringType()), safe_col("slug").cast(StringType())))
@@ -87,10 +90,12 @@ def run():
         # Read all JSONs; some files contain arrays
         raw = spark.read.option("multiline", True).json(paths)
 
-        # If a top-level array was read as a single array column, explode it
+        # If a top-level array was read as a single array column, explode it.
+        # Only treat it as a wrapping array if its elements are structs
+        # (records) — not a simple array-of-strings field like "tags".
         array_field = None
         for f in raw.schema.fields:
-            if isinstance(f.dataType, ArrayType):
+            if isinstance(f.dataType, ArrayType) and isinstance(f.dataType.elementType, StructType):
                 array_field = f.name
                 break
         if array_field:
