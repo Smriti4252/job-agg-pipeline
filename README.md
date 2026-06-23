@@ -20,7 +20,7 @@ flowchart LR
         I[Apache Airflow\nDocker + LocalExecutor]
     end
 
-    I -.->|@daily schedule| C
+    I -.->|daily schedule| C
 ```
 
 ---
@@ -185,4 +185,5 @@ dbt tests run automatically after every gold layer build:
 ## Author
 
 **Smriti Sharma** — Data Engineer
-[LinkedIn](#) · [GitHub](#)
+**Smriti Sharma** — Data Engineer
+[LinkedIn](https://www.linkedin.com/in/smritisharma731/) · [GitHub](https://github.com/Smriti4252)
